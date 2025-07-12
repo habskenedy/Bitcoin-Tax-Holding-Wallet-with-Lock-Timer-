@@ -45,7 +45,10 @@
     (ok (var-get annual-interest-rate))
 )
 
-(define-private (calculate-interest (principal-amount uint) (blocks-held uint))
+(define-private (calculate-interest
+        (principal-amount uint)
+        (blocks-held uint)
+    )
     (let ((annual-rate (var-get annual-interest-rate)))
         (/ (* (* principal-amount annual-rate) blocks-held) u525600)
     )
