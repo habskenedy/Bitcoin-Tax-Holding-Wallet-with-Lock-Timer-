@@ -6,8 +6,15 @@
 (define-constant err-before-unlock (err u104))
 (define-constant err-no-value (err u105))
 (define-constant err-no-interest (err u106))
+(define-constant err-insufficient-amount (err u107))
+
+(define-constant fee-tier-1 u300)
+(define-constant fee-tier-2 u200)
+(define-constant fee-tier-3 u100)
+(define-constant fee-tier-4 u50)
 
 (define-data-var tax-rate uint u30)
+(define-data-var total-fees-collected uint u0)
 (define-data-var unlock-height uint u0)
 (define-data-var annual-interest-rate uint u5)
 
@@ -43,6 +50,27 @@
 
 (define-read-only (get-interest-rate)
     (ok (var-get annual-interest-rate))
+)
+
+(define-private (calculate-withdrawal-fee (lock-duration uint) (amount uint))
+    (let ((fee-basis-points
+            (if (>= lock-duration u52560)
+                fee-tier-4
+                (if (>= lock-duration u26280)
+                    fee-tier-3
+                    (if (>= lock-duration u13140)
+                        fee-tier-2
+                        fee-tier-1
+                    )
+                )
+            )
+        ))
+        (/ (* amount fee-basis-points) u10000)
+    )
+)
+
+(define-read-only (get-total-fees-collected)
+    (ok (var-get total-fees-collected))
 )
 
 (define-private (calculate-interest
@@ -106,12 +134,17 @@
             (deposit-data (unwrap! (map-get? tax-deposits tx-sender) err-not-locked))
             (blocks-held (- current-height (get deposit-height deposit-data)))
             (interest-earned (calculate-interest (get amount deposit-data) blocks-held))
+            (lock-duration (- (get locked-until deposit-data) (get deposit-height deposit-data)))
+            (withdrawal-fee (calculate-withdrawal-fee lock-duration amount))
+            (net-amount (- amount withdrawal-fee))
         )
         (asserts! (>= current-height (get locked-until deposit-data))
             err-before-unlock
         )
         (asserts! (<= amount (get amount deposit-data)) err-no-value)
-        (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+        (asserts! (> net-amount u0) err-insufficient-amount)
+        (try! (as-contract (stx-transfer? net-amount (as-contract tx-sender) tx-sender)))
+        (var-set total-fees-collected (+ (var-get total-fees-collected) withdrawal-fee))
         (if (< amount (get amount deposit-data))
             (map-set tax-deposits tx-sender {
                 amount: (- (get amount deposit-data) amount),
@@ -121,7 +154,7 @@
             })
             (map-delete tax-deposits tx-sender)
         )
-        (ok true)
+        (ok net-amount)
     )
 )
 
@@ -166,6 +199,18 @@
                 (interest-earned (calculate-interest (get amount deposit-data) blocks-held))
             )
             (ok interest-earned)
+        )
+        (ok u0)
+    )
+)
+
+(define-read-only (preview-withdrawal-fee (wallet principal) (amount uint))
+    (match (map-get? tax-deposits wallet)
+        deposit-data (let (
+                (lock-duration (- (get locked-until deposit-data) (get deposit-height deposit-data)))
+                (withdrawal-fee (calculate-withdrawal-fee lock-duration amount))
+            )
+            (ok withdrawal-fee)
         )
         (ok u0)
     )
