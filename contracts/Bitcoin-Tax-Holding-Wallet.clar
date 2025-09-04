@@ -12,11 +12,13 @@
 (define-constant fee-tier-2 u200)
 (define-constant fee-tier-3 u100)
 (define-constant fee-tier-4 u50)
+(define-constant early-withdrawal-penalty u1500)
 
 (define-data-var tax-rate uint u30)
 (define-data-var total-fees-collected uint u0)
 (define-data-var unlock-height uint u0)
 (define-data-var annual-interest-rate uint u5)
+(define-data-var total-penalties-collected uint u0)
 
 (define-map tax-deposits
     principal
@@ -52,25 +54,34 @@
     (ok (var-get annual-interest-rate))
 )
 
-(define-private (calculate-withdrawal-fee (lock-duration uint) (amount uint))
-    (let ((fee-basis-points
-            (if (>= lock-duration u52560)
-                fee-tier-4
-                (if (>= lock-duration u26280)
-                    fee-tier-3
-                    (if (>= lock-duration u13140)
-                        fee-tier-2
-                        fee-tier-1
-                    )
+(define-private (calculate-withdrawal-fee
+        (lock-duration uint)
+        (amount uint)
+    )
+    (let ((fee-basis-points (if (>= lock-duration u52560)
+            fee-tier-4
+            (if (>= lock-duration u26280)
+                fee-tier-3
+                (if (>= lock-duration u13140)
+                    fee-tier-2
+                    fee-tier-1
                 )
             )
-        ))
+        )))
         (/ (* amount fee-basis-points) u10000)
     )
 )
 
+(define-private (calculate-early-withdrawal-penalty (amount uint))
+    (/ (* amount early-withdrawal-penalty) u10000)
+)
+
 (define-read-only (get-total-fees-collected)
     (ok (var-get total-fees-collected))
+)
+
+(define-read-only (get-total-penalties-collected)
+    (ok (var-get total-penalties-collected))
 )
 
 (define-private (calculate-interest
@@ -144,7 +155,9 @@
         (asserts! (<= amount (get amount deposit-data)) err-no-value)
         (asserts! (> net-amount u0) err-insufficient-amount)
         (try! (as-contract (stx-transfer? net-amount (as-contract tx-sender) tx-sender)))
-        (var-set total-fees-collected (+ (var-get total-fees-collected) withdrawal-fee))
+        (var-set total-fees-collected
+            (+ (var-get total-fees-collected) withdrawal-fee)
+        )
         (if (< amount (get amount deposit-data))
             (map-set tax-deposits tx-sender {
                 amount: (- (get amount deposit-data) amount),
@@ -204,15 +217,49 @@
     )
 )
 
-(define-read-only (preview-withdrawal-fee (wallet principal) (amount uint))
+(define-read-only (preview-withdrawal-fee
+        (wallet principal)
+        (amount uint)
+    )
     (match (map-get? tax-deposits wallet)
         deposit-data (let (
-                (lock-duration (- (get locked-until deposit-data) (get deposit-height deposit-data)))
+                (lock-duration (- (get locked-until deposit-data)
+                    (get deposit-height deposit-data)
+                ))
                 (withdrawal-fee (calculate-withdrawal-fee lock-duration amount))
             )
             (ok withdrawal-fee)
         )
         (ok u0)
+    )
+)
+
+(define-public (early-withdraw (amount uint))
+    (let (
+            (current-height burn-block-height)
+            (deposit-data (unwrap! (map-get? tax-deposits tx-sender) err-not-locked))
+            (penalty (calculate-early-withdrawal-penalty amount))
+            (net-amount (- amount penalty))
+        )
+        (asserts! (< current-height (get locked-until deposit-data))
+            err-not-locked
+        )
+        (asserts! (<= amount (get amount deposit-data)) err-no-value)
+        (asserts! (> net-amount u0) err-insufficient-amount)
+        (try! (as-contract (stx-transfer? net-amount (as-contract tx-sender) tx-sender)))
+        (var-set total-penalties-collected
+            (+ (var-get total-penalties-collected) penalty)
+        )
+        (if (< amount (get amount deposit-data))
+            (map-set tax-deposits tx-sender {
+                amount: (- (get amount deposit-data) amount),
+                locked-until: (get locked-until deposit-data),
+                deposit-height: (get deposit-height deposit-data),
+                interest-earned: (get interest-earned deposit-data),
+            })
+            (map-delete tax-deposits tx-sender)
+        )
+        (ok net-amount)
     )
 )
 
