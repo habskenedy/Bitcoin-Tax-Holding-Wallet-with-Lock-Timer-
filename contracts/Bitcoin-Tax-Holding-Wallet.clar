@@ -19,6 +19,32 @@
 (define-data-var unlock-height uint u0)
 (define-data-var annual-interest-rate uint u5)
 (define-data-var total-penalties-collected uint u0)
+(define-data-var compliance-report-counter uint u0)
+
+;; Tax compliance tracking maps
+(define-map transaction-history
+    { user: principal, tx-id: uint }
+    {
+        tx-type: (string-ascii 20),
+        amount: uint,
+        timestamp: uint,
+        block-height: uint,
+        fees-paid: uint,
+        penalty-paid: uint
+    }
+)
+
+(define-map annual-tax-summary
+    { user: principal, year: uint }
+    {
+        total-deposits: uint,
+        total-withdrawals: uint,
+        total-fees-paid: uint,
+        total-penalties-paid: uint,
+        total-interest-earned: uint,
+        transaction-count: uint
+    }
+)
 
 (define-map tax-deposits
     principal
@@ -124,6 +150,7 @@
                     deposit-height: current-height,
                     interest-earned: u0,
                 })
+                (record-transaction tx-sender "deposit" amount u0 u0)
             )
             (begin
                 (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
@@ -133,6 +160,7 @@
                     deposit-height: current-height,
                     interest-earned: u0,
                 })
+                (record-transaction tx-sender "deposit" amount u0 u0)
             )
         )
         (ok true)
@@ -167,6 +195,7 @@
             })
             (map-delete tax-deposits tx-sender)
         )
+        (record-transaction tx-sender "withdraw" amount withdrawal-fee u0)
         (ok net-amount)
     )
 )
@@ -200,6 +229,7 @@
             deposit-height: current-height,
             interest-earned: u0,
         })
+        (record-transaction tx-sender "claim-interest" interest-earned u0 u0)
         (ok interest-earned)
     )
 )
@@ -259,6 +289,7 @@
             })
             (map-delete tax-deposits tx-sender)
         )
+        (record-transaction tx-sender "early-withdraw" amount u0 penalty)
         (ok net-amount)
     )
 )
@@ -270,5 +301,130 @@
             (try! (as-contract (stx-transfer? balance (as-contract tx-sender) contract-owner)))
             (ok true)
         )
+    )
+)
+
+;; === TAX COMPLIANCE REPORTING FUNCTIONS ===
+
+;; Helper function to record transactions for compliance
+(define-private (record-transaction
+        (user principal)
+        (tx-type (string-ascii 20))
+        (amount uint)
+        (fees uint)
+        (penalty uint)
+    )
+    (let ((current-tx-id (+ (var-get compliance-report-counter) u1))
+          (current-year (/ burn-block-height u52560)))
+        (var-set compliance-report-counter current-tx-id)
+        (map-set transaction-history { user: user, tx-id: current-tx-id }
+            {
+                tx-type: tx-type,
+                amount: amount,
+                timestamp: (unwrap-panic (get-stacks-block-info? time burn-block-height)),
+                block-height: burn-block-height,
+                fees-paid: fees,
+                penalty-paid: penalty
+            }
+        )
+        ;; Update annual summary
+        (match (map-get? annual-tax-summary { user: user, year: current-year })
+            existing-summary (map-set annual-tax-summary { user: user, year: current-year }
+                {
+                    total-deposits: (if (is-eq tx-type "deposit")
+                        (+ (get total-deposits existing-summary) amount)
+                        (get total-deposits existing-summary)
+                    ),
+                    total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw"))
+                        (+ (get total-withdrawals existing-summary) amount)
+                        (get total-withdrawals existing-summary)
+                    ),
+                    total-fees-paid: (+ (get total-fees-paid existing-summary) fees),
+                    total-penalties-paid: (+ (get total-penalties-paid existing-summary) penalty),
+                    total-interest-earned: (if (is-eq tx-type "claim-interest")
+                        (+ (get total-interest-earned existing-summary) amount)
+                        (get total-interest-earned existing-summary)
+                    ),
+                    transaction-count: (+ (get transaction-count existing-summary) u1)
+                }
+            )
+            (map-set annual-tax-summary { user: user, year: current-year }
+                {
+                    total-deposits: (if (is-eq tx-type "deposit") amount u0),
+                    total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw")) amount u0),
+                    total-fees-paid: fees,
+                    total-penalties-paid: penalty,
+                    total-interest-earned: (if (is-eq tx-type "claim-interest") amount u0),
+                    transaction-count: u1
+                }
+            )
+        )
+        current-tx-id
+    )
+)
+
+;; Get transaction history for a specific user
+(define-read-only (get-transaction-history (user principal) (tx-id uint))
+    (map-get? transaction-history { user: user, tx-id: tx-id })
+)
+
+;; Get annual tax summary for a user
+(define-read-only (get-annual-tax-summary (user principal) (year uint))
+    (map-get? annual-tax-summary { user: user, year: year })
+)
+
+;; Generate comprehensive tax report for a user
+(define-read-only (get-tax-compliance-report (user principal) (year uint))
+    (match (map-get? annual-tax-summary { user: user, year: year })
+        summary (let (
+                (current-deposit (unwrap-panic (get-deposit user)))
+                (current-interest (unwrap-panic (get-accrued-interest user)))
+            )
+            (ok {
+                year: year,
+                user: user,
+                annual-summary: summary,
+                current-deposit-balance: (get amount current-deposit),
+                current-locked-until: (get locked-until current-deposit),
+                current-accrued-interest: current-interest,
+                report-generated-at: burn-block-height,
+                net-tax-impact: (- (+ (get total-deposits summary) (get total-interest-earned summary))
+                    (+ (get total-withdrawals summary) (get total-fees-paid summary) (get total-penalties-paid summary))
+                )
+            })
+        )
+        (err u404) ;; No data found for this year
+    )
+)
+
+;; Get total compliance statistics (owner only)
+(define-read-only (get-compliance-statistics)
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok {
+            total-transactions-recorded: (var-get compliance-report-counter),
+            total-fees-collected: (var-get total-fees-collected),
+            total-penalties-collected: (var-get total-penalties-collected),
+            current-tax-rate: (var-get tax-rate),
+            current-interest-rate: (var-get annual-interest-rate)
+        })
+    )
+)
+
+;; Batch export user transactions for a range (owner only)
+(define-read-only (export-user-transactions
+        (user principal)
+        (start-tx-id uint)
+        (end-tx-id uint)
+    )
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (<= start-tx-id end-tx-id) err-no-value)
+        (ok {
+            user: user,
+            start-tx-id: start-tx-id,
+            end-tx-id: end-tx-id,
+            export-height: burn-block-height
+        })
     )
 )
