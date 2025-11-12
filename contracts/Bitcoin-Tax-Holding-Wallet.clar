@@ -23,26 +23,32 @@
 
 ;; Tax compliance tracking maps
 (define-map transaction-history
-    { user: principal, tx-id: uint }
+    {
+        user: principal,
+        tx-id: uint,
+    }
     {
         tx-type: (string-ascii 20),
         amount: uint,
         timestamp: uint,
         block-height: uint,
         fees-paid: uint,
-        penalty-paid: uint
+        penalty-paid: uint,
     }
 )
 
 (define-map annual-tax-summary
-    { user: principal, year: uint }
+    {
+        user: principal,
+        year: uint,
+    }
     {
         total-deposits: uint,
         total-withdrawals: uint,
         total-fees-paid: uint,
         total-penalties-paid: uint,
         total-interest-earned: uint,
-        transaction-count: uint
+        transaction-count: uint,
     }
 )
 
@@ -314,69 +320,105 @@
         (fees uint)
         (penalty uint)
     )
-    (let ((current-tx-id (+ (var-get compliance-report-counter) u1))
-          (current-year (/ burn-block-height u52560)))
-        (var-set compliance-report-counter current-tx-id)
-        (map-set transaction-history { user: user, tx-id: current-tx-id }
-            {
-                tx-type: tx-type,
-                amount: amount,
-                timestamp: (unwrap-panic (get-stacks-block-info? time burn-block-height)),
-                block-height: burn-block-height,
-                fees-paid: fees,
-                penalty-paid: penalty
-            }
+    (let (
+            (current-tx-id (+ (var-get compliance-report-counter) u1))
+            (current-year (/ burn-block-height u52560))
         )
+        (var-set compliance-report-counter current-tx-id)
+        (map-set transaction-history {
+            user: user,
+            tx-id: current-tx-id,
+        } {
+            tx-type: tx-type,
+            amount: amount,
+            timestamp: (unwrap-panic (get-stacks-block-info? time burn-block-height)),
+            block-height: burn-block-height,
+            fees-paid: fees,
+            penalty-paid: penalty,
+        })
         ;; Update annual summary
-        (match (map-get? annual-tax-summary { user: user, year: current-year })
-            existing-summary (map-set annual-tax-summary { user: user, year: current-year }
-                {
-                    total-deposits: (if (is-eq tx-type "deposit")
-                        (+ (get total-deposits existing-summary) amount)
-                        (get total-deposits existing-summary)
-                    ),
-                    total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw"))
-                        (+ (get total-withdrawals existing-summary) amount)
-                        (get total-withdrawals existing-summary)
-                    ),
-                    total-fees-paid: (+ (get total-fees-paid existing-summary) fees),
-                    total-penalties-paid: (+ (get total-penalties-paid existing-summary) penalty),
-                    total-interest-earned: (if (is-eq tx-type "claim-interest")
-                        (+ (get total-interest-earned existing-summary) amount)
-                        (get total-interest-earned existing-summary)
-                    ),
-                    transaction-count: (+ (get transaction-count existing-summary) u1)
-                }
-            )
-            (map-set annual-tax-summary { user: user, year: current-year }
-                {
-                    total-deposits: (if (is-eq tx-type "deposit") amount u0),
-                    total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw")) amount u0),
-                    total-fees-paid: fees,
-                    total-penalties-paid: penalty,
-                    total-interest-earned: (if (is-eq tx-type "claim-interest") amount u0),
-                    transaction-count: u1
-                }
-            )
+        (match (map-get? annual-tax-summary {
+            user: user,
+            year: current-year,
+        })
+            existing-summary (map-set annual-tax-summary {
+                user: user,
+                year: current-year,
+            } {
+                total-deposits: (if (is-eq tx-type "deposit")
+                    (+ (get total-deposits existing-summary) amount)
+                    (get total-deposits existing-summary)
+                ),
+                total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw"))
+                    (+ (get total-withdrawals existing-summary) amount)
+                    (get total-withdrawals existing-summary)
+                ),
+                total-fees-paid: (+ (get total-fees-paid existing-summary) fees),
+                total-penalties-paid: (+ (get total-penalties-paid existing-summary) penalty),
+                total-interest-earned: (if (is-eq tx-type "claim-interest")
+                    (+ (get total-interest-earned existing-summary) amount)
+                    (get total-interest-earned existing-summary)
+                ),
+                transaction-count: (+ (get transaction-count existing-summary) u1),
+            })
+            (map-set annual-tax-summary {
+                user: user,
+                year: current-year,
+            } {
+                total-deposits: (if (is-eq tx-type "deposit")
+                    amount
+                    u0
+                ),
+                total-withdrawals: (if (or (is-eq tx-type "withdraw") (is-eq tx-type "early-withdraw"))
+                    amount
+                    u0
+                ),
+                total-fees-paid: fees,
+                total-penalties-paid: penalty,
+                total-interest-earned: (if (is-eq tx-type "claim-interest")
+                    amount
+                    u0
+                ),
+                transaction-count: u1,
+            })
         )
         current-tx-id
     )
 )
 
 ;; Get transaction history for a specific user
-(define-read-only (get-transaction-history (user principal) (tx-id uint))
-    (map-get? transaction-history { user: user, tx-id: tx-id })
+(define-read-only (get-transaction-history
+        (user principal)
+        (tx-id uint)
+    )
+    (map-get? transaction-history {
+        user: user,
+        tx-id: tx-id,
+    })
 )
 
 ;; Get annual tax summary for a user
-(define-read-only (get-annual-tax-summary (user principal) (year uint))
-    (map-get? annual-tax-summary { user: user, year: year })
+(define-read-only (get-annual-tax-summary
+        (user principal)
+        (year uint)
+    )
+    (map-get? annual-tax-summary {
+        user: user,
+        year: year,
+    })
 )
 
 ;; Generate comprehensive tax report for a user
-(define-read-only (get-tax-compliance-report (user principal) (year uint))
-    (match (map-get? annual-tax-summary { user: user, year: year })
-        summary (let (
+(define-read-only (get-tax-compliance-report
+        (user principal)
+        (year uint)
+    )
+    (match (map-get? annual-tax-summary {
+        user: user,
+        year: year,
+    })
+        summary
+        (let (
                 (current-deposit (unwrap-panic (get-deposit user)))
                 (current-interest (unwrap-panic (get-accrued-interest user)))
             )
@@ -388,9 +430,14 @@
                 current-locked-until: (get locked-until current-deposit),
                 current-accrued-interest: current-interest,
                 report-generated-at: burn-block-height,
-                net-tax-impact: (- (+ (get total-deposits summary) (get total-interest-earned summary))
-                    (+ (get total-withdrawals summary) (get total-fees-paid summary) (get total-penalties-paid summary))
-                )
+                net-tax-impact: (-
+                    (+ (get total-deposits summary)
+                        (get total-interest-earned summary)
+                    )
+                    (+ (get total-withdrawals summary)
+                        (get total-fees-paid summary)
+                        (get total-penalties-paid summary)
+                    )),
             })
         )
         (err u404) ;; No data found for this year
@@ -406,7 +453,7 @@
             total-fees-collected: (var-get total-fees-collected),
             total-penalties-collected: (var-get total-penalties-collected),
             current-tax-rate: (var-get tax-rate),
-            current-interest-rate: (var-get annual-interest-rate)
+            current-interest-rate: (var-get annual-interest-rate),
         })
     )
 )
@@ -424,7 +471,78 @@
             user: user,
             start-tx-id: start-tx-id,
             end-tx-id: end-tx-id,
-            export-height: burn-block-height
+            export-height: burn-block-height,
         })
     )
+)
+
+(define-constant err-no-beneficiary (err u108))
+(define-constant err-not-beneficiary (err u109))
+(define-constant err-inactive-window (err u110))
+
+(define-map beneficiary-settings
+    principal
+    {
+        beneficiary: principal,
+        claimable-after: uint,
+    }
+)
+
+(define-public (set-beneficiary
+        (beneficiary principal)
+        (inactivity-period uint)
+    )
+    (begin
+        (asserts! (> inactivity-period u0) err-no-value)
+        (map-set beneficiary-settings tx-sender {
+            beneficiary: beneficiary,
+            claimable-after: (+ burn-block-height inactivity-period),
+        })
+        (ok true)
+    )
+)
+
+(define-public (clear-beneficiary)
+    (begin
+        (map-delete beneficiary-settings tx-sender)
+        (ok true)
+    )
+)
+
+(define-public (heartbeat (inactivity-period uint))
+    (let ((settings (unwrap! (map-get? beneficiary-settings tx-sender) err-no-beneficiary)))
+        (asserts! (> inactivity-period u0) err-no-value)
+        (map-set beneficiary-settings tx-sender {
+            beneficiary: (get beneficiary settings),
+            claimable-after: (+ burn-block-height inactivity-period),
+        })
+        (ok true)
+    )
+)
+
+(define-public (beneficiary-claim (owner principal))
+    (let (
+            (settings (unwrap! (map-get? beneficiary-settings owner) err-no-beneficiary))
+            (current-height burn-block-height)
+            (deposit-data (unwrap! (map-get? tax-deposits owner) err-not-locked))
+            (amount (get amount deposit-data))
+        )
+        (asserts! (is-eq tx-sender (get beneficiary settings))
+            err-not-beneficiary
+        )
+        (asserts! (>= current-height (get claimable-after settings))
+            err-inactive-window
+        )
+        (asserts! (>= current-height (get locked-until deposit-data))
+            err-before-unlock
+        )
+        (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+        (map-delete tax-deposits owner)
+        (record-transaction owner "beneficiary-claim" amount u0 u0)
+        (ok amount)
+    )
+)
+
+(define-read-only (get-beneficiary (owner principal))
+    (map-get? beneficiary-settings owner)
 )
